@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY_IMAGE: iwamot/collmbo-test
+  REGISTRY_IMAGE: ghcr.io/iwamot/collmbo-test
 
 jobs:
   build:

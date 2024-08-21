@@ -25,7 +25,7 @@ jobs:
         run: |
           platform=${{ matrix.platform }}
           suffix=$([[ "${{ matrix.use_bedrock }}" == "true" ]] && echo "-bedrock" || echo "")
-          echo "DIGEST_NAME=digest-${platform//\//-}${suffix}" >> $GITHUB_ENV
+          echo "DIGEST_NAME=digests-${platform//\//-}${suffix}" >> $GITHUB_ENV
 
       - name: Checkout
         uses: actions/checkout@v4

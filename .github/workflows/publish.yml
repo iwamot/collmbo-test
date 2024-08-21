@@ -17,11 +17,15 @@ jobs:
         platform:
           - linux/amd64
           - linux/arm64
+        use_bedrock:
+          - true
+          - false
     steps:
       - name: Prepare
         run: |
           platform=${{ matrix.platform }}
-          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+          suffix=$([[ "${{ matrix.use_bedrock }}" == "true" ]] && echo "-bedrock" || echo "")
+          echo "DIGEST_NAME=digest-${platform//\//-}${suffix}" >> $GITHUB_ENV
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -62,7 +66,7 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ env.PLATFORM_PAIR }}
+          name: ${{ env.DIGEST_NAME }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -73,12 +77,23 @@ jobs:
       packages: write
     needs:
       - build
+    strategy:
+      fail-fast: false
+      matrix:
+        use_bedrock:
+          - true
+          - false
     steps:
+      - name: Prepare
+        run: |
+          suffix=$([[ "${{ matrix.use_bedrock }}" == "true" ]] && echo "-bedrock" || echo "")
+          echo "DIGEST_SUFFIX=${suffix}" >> $GITHUB_ENV
+
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digests-*
+          pattern: digests-*${{ env.DIGEST_SUFFIX }}
           merge-multiple: true
 
       - name: Set up Docker Buildx
@@ -89,6 +104,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=schedule
+            type=ref,event=branch
+            type=ref,event=tag
+            type=ref,event=pr
+            type=semver,pattern={{version}}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -100,7 +121,9 @@ jobs:
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+          suffix=$([[ "${{ matrix.use_bedrock }}" == "true" ]] && echo "-bedrock" || echo "")
+          tags=$(jq -cr --arg suffix "$suffix" '.tags | map("-t " + . + $suffix) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          docker buildx imagetools create $tags \
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
 
       - name: Inspect image

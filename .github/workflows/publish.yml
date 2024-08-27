@@ -75,61 +75,61 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-#  merge:
-#    runs-on: ubuntu-latest
-#    permissions:
-#      packages: write
-#    needs:
-#      - build
-#    strategy:
-#      fail-fast: false
-#      matrix:
-#        use_bedrock:
-#          - true
-#          - false
-#    steps:
-#      - name: Prepare
-#        run: |
-#          suffix=$([[ "${{ matrix.use_bedrock }}" == "true" ]] && echo "-bedrock" || echo "")
-#          echo "DIGEST_SUFFIX=${suffix}" >> $GITHUB_ENV
-#
-#      - name: Download digests
-#        uses: actions/download-artifact@v4
-#        with:
-#          path: /tmp/digests
-#          pattern: digests-*${{ env.DIGEST_SUFFIX }}
-#          merge-multiple: true
-#
-#      - name: Set up Docker Buildx
-#        uses: docker/setup-buildx-action@v3
-#
-#      - name: Docker meta
-#        id: meta
-#        uses: docker/metadata-action@v5
-#        with:
-#          images: ${{ env.REGISTRY_IMAGE }}
-#          tags: |
-#            type=schedule
-#            type=ref,event=branch
-#            type=ref,event=tag
-#            type=ref,event=pr
-#            type=semver,pattern={{version}}
-#
-#      - name: Login to GitHub Container Registry
-#        uses: docker/login-action@v3
-#        with:
-#          registry: ghcr.io
-#          username: ${{ github.actor }}
-#          password: ${{ secrets.GITHUB_TOKEN }}
-#
-#      - name: Create manifest list and push
-#        working-directory: /tmp/digests
-#        run: |
-#          suffix=$([[ "${{ matrix.use_bedrock }}" == "true" ]] && echo "-bedrock" || echo "")
-#          tags=$(jq -cr --arg suffix "$suffix" '.tags | map("-t " + . + $suffix) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")
-#          docker buildx imagetools create $tags \
-#            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
-#
-#      - name: Inspect image
-#        run: |
-#          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }}
+  merge:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    needs:
+      - build
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor:
+          - slim
+          - full
+    steps:
+      - name: Prepare
+        run: |
+          flavor=${{ matrix.flavor }}
+          echo "DIGEST_PATTERN=digests-*-${flavor}" >> $GITHUB_ENV
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: ${{ env.DIGEST_PATTERN }}
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=schedule
+            type=ref,event=branch
+            type=ref,event=tag
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          flavor=${{ matrix.flavor }}
+          tags=$(jq -cr --arg flavor "$flavor" '.tags | map("-t " + . + "-" + $flavor) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          docker buildx imagetools create $tags \
+            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }}

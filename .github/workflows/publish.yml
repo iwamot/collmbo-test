@@ -107,10 +107,6 @@ jobs:
         with:
           images: ${{ env.REGISTRY_IMAGE }}
           tags: |
-            type=schedule
-            type=ref,event=branch
-            type=ref,event=tag
-            type=ref,event=pr
             type=semver,pattern={{version}}
 
       - name: Login to GitHub Container Registry

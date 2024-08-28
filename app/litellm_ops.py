@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import threading
 import time
@@ -77,6 +78,13 @@ def messages_within_context_window(
     else:
         num_context_tokens = num_tokens
 
+    # Remove any non-user messages at the beginning of the list
+    while messages and messages[0]["role"] != "user":
+        num_context_tokens = litellm.token_counter(
+            model=LITELLM_MODEL_TYPE, messages=messages
+        )
+        del messages[0]
+
     return messages, num_context_tokens, max_context_tokens
 
 
@@ -122,6 +130,7 @@ def call_litellm_completion(
         user=user,
         stream=stream,
         tools=tools,
+        aws_region_name=os.environ.get("AWS_REGION_NAME"),
     )
 
 
@@ -131,13 +140,13 @@ def consume_litellm_stream_to_write_reply(
     wip_reply: Union[dict, SlackResponse],
     context: BoltContext,
     user_id: str,
-    messages: List[Dict[str, Union[str, Dict[str, str]]]],
+    messages: List[Dict[str, Union[str, Dict[str, str], List]]],
     stream: Union[litellm.ModelResponse, litellm.CustomStreamWrapper],
     timeout_seconds: int,
     translate_markdown: bool,
 ):
     start_time = time.time()
-    assistant_reply: Dict[str, Union[str, Dict[str, str]]] = {
+    assistant_reply: Dict[str, Union[str, Dict[str, str], List]] = {
         "role": "assistant",
         "content": "",
     }
@@ -189,12 +198,12 @@ def consume_litellm_stream_to_write_reply(
                 pass
 
         response = litellm.stream_chunk_builder(chunks)
-        if hasattr(response.choices[0].message, "tool_calls"):
+        response_message = response.choices[0].message
+        tool_calls = response.choices[0].message.tool_calls
+        if tool_calls:
+            assistant_reply["tool_calls"] = response_message.model_dump()["tool_calls"]
             tools_module = import_module(LITELLM_TOOLS_MODULE_NAME)
-            assistant_reply["tool_calls"] = response.choices[0].message.model_dump()[
-                "tool_calls"
-            ]
-            for tool_call in response.choices[0].message.tool_calls:
+            for tool_call in tool_calls:
                 function_name = tool_call.function.name
                 function_to_call = getattr(tools_module, function_name)
                 function_args = json.loads(tool_call.function.arguments)

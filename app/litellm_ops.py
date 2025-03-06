@@ -1,12 +1,15 @@
 import json
+import logging
 import os
 import re
 import threading
 import time
 from importlib import import_module
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Optional, Tuple, Union
 
 import litellm
+from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
+from litellm.types.utils import ModelResponse
 from slack_bolt import BoltContext
 from slack_sdk.web import SlackResponse, WebClient
 
@@ -17,9 +20,10 @@ from app.env import (
     LITELLM_MODEL_TYPE,
     LITELLM_TEMPERATURE,
     LITELLM_TOOLS_MODULE_NAME,
+    SLACK_UPDATE_TEXT_BUFFER_SIZE,
 )
 from app.markdown_conversion import markdown_to_slack, slack_to_markdown
-from app.slack_ops import update_wip_message
+from app.slack_ops import post_wip_message, update_wip_message
 
 # ----------------------------
 # Internal functions
@@ -35,12 +39,7 @@ _prompt_tokens_used_by_tools_cache: Optional[int] = None
 
 
 # Format message from Slack to send to LiteLLM
-def format_litellm_message_content(
-    content: str, translate_markdown: bool
-) -> Optional[str]:
-    if content is None:
-        return None
-
+def format_litellm_message_content(content: str, translate_markdown: bool) -> str:
     # Unescape &, < and >, since Slack replaces these with their HTML equivalents
     # See also: https://api.slack.com/reference/surfaces/formatting#escaping
     content = content.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
@@ -52,18 +51,51 @@ def format_litellm_message_content(
     return content
 
 
-# Remove old messages to make sure we have room for max_tokens
+# Bedrock Claude allows up to 5 PDFs, so remove the oldest ones if over the limit
+def trim_pdf_content(messages: list[dict]) -> None:
+    def count_pdfs() -> int:
+        return sum(
+            1
+            for message in messages
+            if isinstance(message.get("content"), list)
+            for item in message["content"]
+            if item["type"] == "image_url"
+            and item["image_url"]["url"].startswith("data:application/pdf;")
+        )
+
+    while count_pdfs() > 5:
+        for message in messages:
+            if not isinstance(message.get("content"), list):
+                continue
+            for item in message["content"]:
+                if item["type"] == "image_url" and item["image_url"]["url"].startswith(
+                    "data:application/pdf;"
+                ):
+                    message["content"].remove(item)
+                    break
+            else:
+                continue
+            break
+
+
+# Remove old messages to make sure we have room for max_input_tokens
 def messages_within_context_window(
-    messages: List[Dict[str, Union[str, Dict[str, str]]]],
-) -> Tuple[List[Dict[str, Union[str, Dict[str, str]]]], int, int]:
-    max_context_tokens = (
-        litellm.get_max_tokens(LITELLM_MODEL_TYPE) - LITELLM_MAX_TOKENS - 1
+    messages: list[dict],
+) -> Tuple[list[dict], int, int]:
+    model_info = litellm.utils.get_model_info(LITELLM_MODEL_TYPE)
+    max_input_tokens = model_info.get("max_input_tokens") or model_info.get(
+        "max_tokens"
     )
+    if max_input_tokens is None:
+        raise ValueError("LiteLLM does not support the model type")
+    max_context_tokens = max_input_tokens - LITELLM_MAX_TOKENS - 1
     if LITELLM_TOOLS_MODULE_NAME is not None:
         max_context_tokens -= calculate_tokens_necessary_for_tools()
     num_context_tokens = 0  # Number of tokens in the context window just before the earliest message is deleted
     while (
-        num_tokens := litellm.token_counter(model=LITELLM_MODEL_TYPE, messages=messages)
+        num_tokens := litellm.utils.token_counter(
+            model=LITELLM_MODEL_TYPE, messages=messages
+        )
     ) > max_context_tokens:
         removed = False
         for i, message in enumerate(messages):
@@ -80,14 +112,14 @@ def messages_within_context_window(
 
     # Remove any non-user messages at the beginning of the list
     while messages and messages[0]["role"] != "user":
-        num_context_tokens = litellm.token_counter(
+        num_context_tokens = litellm.utils.token_counter(
             model=LITELLM_MODEL_TYPE, messages=messages
         )
         del messages[0]
 
     # Remove any assistant messages at the end of the list
     while messages and messages[-1]["role"] == "assistant":
-        num_context_tokens = litellm.token_counter(
+        num_context_tokens = litellm.utils.token_counter(
             model=LITELLM_MODEL_TYPE, messages=messages
         )
         del messages[-1]
@@ -98,14 +130,14 @@ def messages_within_context_window(
 def start_receiving_litellm_response(
     *,
     temperature: float,
-    messages: List[Dict[str, Union[str, Dict[str, str]]]],
+    messages: list[dict],
     user: str,
-) -> Union[litellm.ModelResponse, litellm.CustomStreamWrapper]:
+) -> CustomStreamWrapper:
     if LITELLM_TOOLS_MODULE_NAME is not None:
         tools = import_module(LITELLM_TOOLS_MODULE_NAME).tools
     else:
         tools = None
-    return call_litellm_completion(
+    response = call_litellm_completion(
         messages=messages,
         max_tokens=LITELLM_MAX_TOKENS,
         temperature=temperature,
@@ -113,17 +145,20 @@ def start_receiving_litellm_response(
         stream=True,
         tools=tools,
     )
+    if not isinstance(response, CustomStreamWrapper):
+        raise TypeError("Expected CustomStreamWrapper when streaming is enabled")
+    return response
 
 
 def call_litellm_completion(
     *,
-    messages: List[Dict[str, Union[str, Dict[str, str]]]],
+    messages: list[dict],
     user: str,
     max_tokens: int = 1024,
     temperature: float = 0,
     stream: bool = False,
-    tools: Optional[List] = None,
-) -> Union[litellm.ModelResponse, litellm.CustomStreamWrapper]:
+    tools: Optional[list] = None,
+) -> Union[ModelResponse, CustomStreamWrapper]:
     return litellm.completion(
         model=LITELLM_MODEL,
         messages=messages,
@@ -133,7 +168,6 @@ def call_litellm_completion(
         temperature=temperature,
         presence_penalty=0,
         frequency_penalty=0,
-        logit_bias={},
         user=user,
         stream=stream,
         tools=tools,
@@ -147,20 +181,27 @@ def consume_litellm_stream_to_write_reply(
     wip_reply: Union[dict, SlackResponse],
     context: BoltContext,
     user_id: str,
-    messages: List[Dict[str, Union[str, Dict[str, str], List]]],
-    stream: Union[litellm.ModelResponse, litellm.CustomStreamWrapper],
+    messages: list[dict],
+    stream: CustomStreamWrapper,
+    thread_ts: Optional[str],
+    loading_text: str,
     timeout_seconds: int,
     translate_markdown: bool,
+    logger: logging.Logger,
 ):
+    if context.channel_id is None:
+        raise ValueError("context.channel_id cannot be None")
+
     start_time = time.time()
-    assistant_reply: Dict[str, Union[str, Dict[str, str], List]] = {
+    assistant_reply = {
         "role": "assistant",
         "content": "",
     }
     messages.append(assistant_reply)
-    word_count = 0
+    pending_text = ""
     threads = []
-    chunks: List = []
+    chunks: list = []
+    is_response_too_long = False
     try:
         loading_character = " ... :writing_hand:"
         for chunk in stream:
@@ -172,10 +213,10 @@ def consume_litellm_stream_to_write_reply(
             if item.get("finish_reason") is not None:
                 break
             delta = item.get("delta")
-            if delta.get("content") is not None:
-                word_count += 1
+            if delta is not None and delta.get("content") is not None:
+                pending_text += delta.get("content")
                 assistant_reply["content"] += delta.get("content")
-                if word_count >= 20:
+                if len(pending_text) >= SLACK_UPDATE_TEXT_BUFFER_SIZE:
 
                     def update_message():
                         assistant_reply_text = format_assistant_reply(
@@ -195,7 +236,11 @@ def consume_litellm_stream_to_write_reply(
                     thread.daemon = True
                     thread.start()
                     threads.append(thread)
-                    word_count = 0
+                    pending_text = ""
+
+                    if len(wip_reply["message"]["text"].encode("utf-8")) > 3500:
+                        is_response_too_long = True
+                        break
 
         for t in threads:
             try:
@@ -204,14 +249,78 @@ def consume_litellm_stream_to_write_reply(
             except Exception:
                 pass
 
+        # Append any remaining text to the message
+        if len(assistant_reply["content"]) > 0:
+            assistant_reply_text = format_assistant_reply(
+                assistant_reply["content"], translate_markdown
+            )
+            wip_reply["message"]["text"] = assistant_reply_text
+            update_wip_message(
+                client=client,
+                channel=context.channel_id,
+                ts=wip_reply["message"]["ts"],
+                text=assistant_reply_text,
+                messages=messages,
+                user=user_id,
+            )
+
+        # If the response is too long, post a new message instead
+        if is_response_too_long:
+            next_wip_reply = post_wip_message(
+                client=client,
+                channel=context.channel_id,
+                thread_ts=thread_ts,
+                loading_text=loading_character,
+                messages=messages,
+                user=user_id,
+            )
+            consume_litellm_stream_to_write_reply(
+                client=client,
+                wip_reply=next_wip_reply,
+                context=context,
+                user_id=user_id,
+                messages=messages,
+                stream=stream,
+                thread_ts=thread_ts,
+                loading_text=loading_text,
+                timeout_seconds=int(timeout_seconds - (time.time() - start_time)),
+                translate_markdown=translate_markdown,
+                logger=logger,
+            )
+
         response = litellm.stream_chunk_builder(chunks)
-        response_message = response.choices[0].message
-        tool_calls = response.choices[0].message.tool_calls
-        if tool_calls:
+        if response is None:
+            raise RuntimeError(
+                "Unexpected None response from 'litellm.stream_chunk_builder'. Check the input 'chunks' and the Litellm API behavior."
+            )
+        response_message = response.choices[0].get("message")
+        if (
+            response_message is not None
+            and response_message.tool_calls is not None
+            and LITELLM_TOOLS_MODULE_NAME is not None
+        ):
+            # If the message has already been updated, post a new one
+            if wip_reply["message"]["text"] != loading_text:
+                wip_reply = post_wip_message(
+                    client=client,
+                    channel=context.channel_id,
+                    thread_ts=thread_ts,
+                    loading_text=loading_text,
+                    messages=messages,
+                    user=user_id,
+                )
+
+            tool_calls = response_message.tool_calls
             assistant_reply["tool_calls"] = response_message.model_dump()["tool_calls"]
             tools_module = import_module(LITELLM_TOOLS_MODULE_NAME)
             for tool_call in tool_calls:
                 function_name = tool_call.function.name
+                if function_name is None:
+                    logger.warning(
+                        "Skipped a tool call due to missing function name. Tool call details: %s",
+                        tool_call,
+                    )
+                    continue
                 function_to_call = getattr(tools_module, function_name)
                 function_args = json.loads(tool_call.function.arguments)
                 function_response = function_to_call(**function_args)
@@ -236,23 +345,13 @@ def consume_litellm_stream_to_write_reply(
                 user_id=user_id,
                 messages=messages,
                 stream=sub_stream,
+                thread_ts=thread_ts,
+                loading_text=loading_text,
                 timeout_seconds=int(timeout_seconds - (time.time() - start_time)),
                 translate_markdown=translate_markdown,
+                logger=logger,
             )
-            return
 
-        assistant_reply_text = format_assistant_reply(
-            assistant_reply["content"], translate_markdown
-        )
-        wip_reply["message"]["text"] = assistant_reply_text
-        update_wip_message(
-            client=client,
-            channel=context.channel_id,
-            ts=wip_reply["message"]["ts"],
-            text=assistant_reply_text,
-            messages=messages,
-            user=user_id,
-        )
     finally:
         for t in threads:
             try:
@@ -260,10 +359,6 @@ def consume_litellm_stream_to_write_reply(
                     t.join()
             except Exception:
                 pass
-        try:
-            stream.close()
-        except Exception:
-            pass
 
 
 # Format message from LiteLLM to display in Slack
@@ -315,7 +410,7 @@ def build_system_text(
 ):
     system_text = system_text_template.format(bot_user_id=context.bot_user_id)
     # Translate format hint in system prompt
-    if translate_markdown is True:
+    if translate_markdown:
         system_text = slack_to_markdown(system_text)
     return system_text
 
@@ -331,11 +426,14 @@ def calculate_tokens_necessary_for_tools() -> int:
         return _prompt_tokens_used_by_tools_cache
 
     def _calculate_prompt_tokens(tools) -> int:
-        return call_litellm_completion(
+        response = call_litellm_completion(
             messages=[{"role": "user", "content": "hello"}],
             user="system",
             tools=tools,
-        )["usage"]["prompt_tokens"]
+        )
+        if not isinstance(response, ModelResponse):
+            raise TypeError("Expected ModelResponse when streaming is disabled")
+        return response["usage"]["prompt_tokens"]
 
     # TODO: If there is a better way to calculate this, replace the logic with it
     module = import_module(tools_module_name)

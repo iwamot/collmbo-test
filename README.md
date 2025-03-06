@@ -1,86 +1,141 @@
 # Collmbo
 
-**A Slack app that lets end-users chat with AI, offering flexible model selection powered by LiteLLM.** Pronounced the same as "Colombo". Forked from [seratch/ChatGPT-in-Slack](https://github.com/seratch/ChatGPT-in-Slack).
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/b13da1c7-5d2f-4ad3-8c5b-9ef4e500deb8">
+</p>
 
-![](https://github.com/user-attachments/assets/fc078de0-406e-4d4d-abb1-f6e30a0dbeab)
+**A Slack bot that lets you choose your preferred LLM using LiteLLM.** Pronounced the same as "Colombo".
+
+> ![](https://github.com/user-attachments/assets/a377b868-3673-4798-b415-44e674cf7ae6)
 
 ## Quick Start
 
-Below are quick setup instructions for Collmbo using some popular AI models. These are representative examples, and Collmbo supports many other models through LiteLLM.
+Collmbo supports multiple LLMs, but let's begin with OpenAI's gpt-4o model for a quick setup.
 
-### OpenAI (gpt-4o)
+### 1. Create a Slack App
+
+[Create a Slack app](https://github.com/iwamot/collmbo/wiki/Creating-a-Slack-App) and obtain the required tokens:
+
+- App-level token (`xapp-1-...`)
+- Bot token (`xoxb-...`)
+
+### 2. Create a `.env` File
+
+Save your credentials in a `.env` file:
 
 ```sh
-$ cat env
-# Create a new Slack app using manifest.yml and grab the app-level token
 SLACK_APP_TOKEN=xapp-1-...
-
-# Install the app into your workspace to grab this token
 SLACK_BOT_TOKEN=xoxb-...
-
-# Visit https://platform.openai.com/api-keys for this token
-OPENAI_API_KEY=sk-...
-
-# Specify a model name supported by LiteLLM
 LITELLM_MODEL=gpt-4o
-
-$ docker run -it --env-file ./env ghcr.io/iwamot/collmbo:latest-slim
+OPENAI_API_KEY=sk-...
 ```
 
-### Azure OpenAI (gpt-4-0613)
+### 3. Run Collmbo Container
+
+Start the bot using Docker:
 
 ```sh
-$ cat env
-SLACK_APP_TOKEN=...
-SLACK_BOT_TOKEN=...
+docker run -it --env-file .env ghcr.io/iwamot/collmbo:latest-slim
+```
+
+### 4. Say Hello!
+
+Mention the bot in Slack and start chatting:
+
+```
+@Collmbo hello!
+```
+
+Collmbo should respond in channels, threads, and DMs.
+
+## Want to Use a Different LLM?
+
+First, pick your favorite LLM from [LiteLLM supported providers](https://docs.litellm.ai/docs/providers).
+
+To use it, update the relevant environment variables in your `.env` file and restart the container.
+
+Here are some examples:
+
+### Gemini - Google AI Studio (Gemini 2.0 Flash)
+
+```sh
+SLACK_APP_TOKEN=xapp-1-...
+SLACK_BOT_TOKEN=xoxb-...
+LITELLM_MODEL=gemini/gemini-2.0-flash-001
+GEMINI_API_KEY=...
+```
+
+### Azure OpenAI (gpt-4o)
+
+```sh
+SLACK_APP_TOKEN=xapp-1-...
+SLACK_BOT_TOKEN=xoxb-...
+LITELLM_MODEL=azure/<your_deployment_name>
+
+# Specify the model type to grab details like max input tokens
+LITELLM_MODEL_TYPE=azure/gpt-4o
+
 AZURE_API_KEY=...
 AZURE_API_BASE=...
 AZURE_API_VERSION=...
-LITELLM_MODEL=azure/<your_deployment_name>
-LITELLM_MODEL_TYPE=azure/gpt-4-0613
-
-$ docker run -it --env-file ./env ghcr.io/iwamot/collmbo:latest-slim
 ```
 
-### Gemini - Google AI Studio (Gemini 1.5 Flash)
+### Amazon Bedrock (Claude 3.7 Sonnet)
 
 ```sh
-$ cat env
 SLACK_APP_TOKEN=...
 SLACK_BOT_TOKEN=...
-GEMINI_API_KEY=...
-LITELLM_MODEL=gemini/gemini-1.5-flash
+LITELLM_MODEL=bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0
 
-$ docker run -it --env-file ./env ghcr.io/iwamot/collmbo:latest-slim
+# You can specify a Bedrock region if it's different from your default AWS region
+AWS_REGION_NAME=us-west-2
+
+# You can use your access key for authentication, but IAM roles are recommended
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
 ```
 
-### Amazon Bedrock (Claude 3.5 Sonnet v2)
+When using Amazon Bedrock, use the `full` flavor image instead of `slim` one, as it includes `boto3`, which is required for Bedrock:
 
-```sh
-$ cat env
-SLACK_APP_TOKEN=...
-SLACK_BOT_TOKEN=...
-LITELLM_MODEL=bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0
-AWS_REGION_NAME=us-west-2  # Optional: Set if Bedrock Claude region is different from application region
-# Recommend using IAM roles for authentication
-
-$ docker run -it --env-file ./env ghcr.io/iwamot/collmbo:latest-full
+```
+docker run -it --env-file .env ghcr.io/iwamot/collmbo:latest-full
 ```
 
-*Note: `full` flavor images include boto3.*
+## Deployment
 
-## Supported Features
+Collmbo does not serve endpoints and can run in any environment with internet access.
 
-- Flexible model selection
-- Redaction (`REDACTION_ENABLED=true`)
-- Image reading (`IMAGE_FILE_ACCESS_ENABLED=true`, for supported models only)
-- Tools / Function calling (`LITELLM_TOOLS_MODULE_NAME=tests.tools_example`, for supported models only)
-- Custom callbacks (`LITELLM_CALLBACK_MODULE_NAME=tests.callback_example`)
+## Features
+
+- **[Tools (Function Calling)](https://github.com/iwamot/collmbo/wiki/Tools-(Function-Calling))** – Extends functionality with function calling.
+- **[Custom callbacks](https://github.com/iwamot/collmbo/wiki/Custom-callbacks)** – Hooks into requests and responses for custom processing.
+- **[Redaction](https://github.com/iwamot/collmbo/wiki/Redaction)** – Masks sensitive information before sending requests.
+- **[Slack-friendly formatting](https://github.com/iwamot/collmbo/wiki/Slack%E2%80%90friendly-formatting)** – Formats messages for better readability in Slack.
+- **[Image input](https://github.com/iwamot/collmbo/wiki/Image-input)** – Enables AI models to analyze uploaded images.
+- **[PDF input](https://github.com/iwamot/collmbo/wiki/PDF-input)** – Enables AI models to analyze uploaded PDFs.
+
+## Configuration
+
+Collmbo runs with default settings, but you can customize its behavior by [setting optional environment variables](https://github.com/iwamot/collmbo/wiki/Optional-Settings).
 
 ## Contributing
 
-We welcome contributions to Collmbo! If you have any feature requests, bug reports, or other issues, please feel free to open an issue on this repository. Your feedback and contributions help make Collmbo better for everyone.
+Contributions are welcome! Feel free to open an issue or submit a pull request.
+
+Before opening a PR, please run:
+
+```sh
+./validate.sh
+```
+
+This helps maintain code quality.
+
+## Related Projects
+
+- [seratch/ChatGPT-in-Slack](https://github.com/seratch/ChatGPT-in-Slack) – The original project by @seratch.
 
 ## License
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+**The code** in this repository is licensed under the **MIT License**.
+
+**The Collmbo icon** (`assets/icon.png`) is licensed under **[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)**. For example, you may use it as a Slack profile icon.

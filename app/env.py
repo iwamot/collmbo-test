@@ -40,6 +40,13 @@ LITELLM_CALLBACK_MODULE_NAME = os.environ.get(
     "LITELLM_CALLBACK_MODULE_NAME", DEFAULT_LITELLM_CALLBACK_MODULE_NAME
 )
 
+DEFAULT_SLACK_UPDATE_TEXT_BUFFER_SIZE = 20
+SLACK_UPDATE_TEXT_BUFFER_SIZE = int(
+    os.environ.get(
+        "SLACK_UPDATE_TEXT_BUFFER_SIZE", DEFAULT_SLACK_UPDATE_TEXT_BUFFER_SIZE
+    )
+)
+
 USE_SLACK_LANGUAGE = os.environ.get("USE_SLACK_LANGUAGE", "true") == "true"
 
 SLACK_APP_LOG_LEVEL = os.environ.get("SLACK_APP_LOG_LEVEL", "DEBUG")
@@ -51,6 +58,8 @@ REDACTION_ENABLED = os.environ.get("REDACTION_ENABLED", "false") == "true"
 IMAGE_FILE_ACCESS_ENABLED = (
     os.environ.get("IMAGE_FILE_ACCESS_ENABLED", "false") == "true"
 )
+
+PDF_FILE_ACCESS_ENABLED = os.environ.get("PDF_FILE_ACCESS_ENABLED", "false") == "true"
 
 # Redaction patterns
 #

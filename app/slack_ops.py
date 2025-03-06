@@ -1,12 +1,11 @@
-from typing import Dict, List, Optional
+from typing import Optional
 
 import requests
-from litellm import supports_vision
 from slack_bolt import BoltContext
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web import SlackResponse, WebClient
 
-from app.env import IMAGE_FILE_ACCESS_ENABLED, LITELLM_MODEL_TYPE
+from app.env import IMAGE_FILE_ACCESS_ENABLED, PDF_FILE_ACCESS_ENABLED
 
 # ----------------------------
 # General operations in a channel
@@ -19,14 +18,14 @@ def find_parent_message(
     if channel_id is None or thread_ts is None:
         return None
 
-    messages = client.conversations_history(
+    messages: list[dict] = client.conversations_history(
         channel=channel_id,
         latest=thread_ts,
         limit=1,
         inclusive=True,
     ).get("messages", [])
 
-    return messages[0] if len(messages) > 0 else None
+    return messages[0] if messages else None
 
 
 def is_this_app_mentioned(context: BoltContext, parent_message: dict) -> bool:
@@ -43,9 +42,9 @@ def post_wip_message(
     *,
     client: WebClient,
     channel: str,
-    thread_ts: str,
+    thread_ts: Optional[str],
     loading_text: str,
-    messages: List[Dict[str, str]],
+    messages: list[dict],
     user: str,
 ) -> SlackResponse:
     system_messages = [msg for msg in messages if msg["role"] == "system"]
@@ -65,7 +64,7 @@ def update_wip_message(
     channel: str,
     ts: str,
     text: str,
-    messages: List[Dict[str, str]],
+    messages: list[dict],
     user: str,
 ) -> SlackResponse:
     system_messages = [msg for msg in messages if msg["role"] == "system"]
@@ -88,29 +87,52 @@ def update_wip_message(
 def can_send_image_url_to_litellm(context: BoltContext) -> bool:
     if IMAGE_FILE_ACCESS_ENABLED is False:
         return False
-    bot_scopes = context.authorize_result.bot_scopes or []
-    can_access_files = context and "files:read" in bot_scopes
-    if can_access_files is False:
+    if context.authorize_result is None or context.authorize_result.bot_scopes is None:
         return False
-    return supports_vision(model=LITELLM_MODEL_TYPE)
+    return "files:read" in context.authorize_result.bot_scopes
 
 
 def download_slack_image_content(image_url: str, bot_token: str) -> bytes:
-    response = requests.get(
-        image_url,
-        headers={"Authorization": f"Bearer {bot_token}"},
-    )
+    headers = {"Authorization": f"Bearer {bot_token}"}
+    response = requests.get(image_url, headers=headers)
     if response.status_code != 200:
         error = f"Request to {image_url} failed with status code {response.status_code}"
         raise SlackApiError(error, response)
 
-    content_type = response.headers["content-type"]
+    content_type = response.headers.get("Content-Type", "")
     if content_type.startswith("text/html"):
         error = f"You don't have the permission to download this file: {image_url}"
         raise SlackApiError(error, response)
 
     if not content_type.startswith("image/"):
         error = f"The responded content-type is not for image data: {content_type}"
+        raise SlackApiError(error, response)
+
+    return response.content
+
+
+def can_send_pdf_url_to_litellm(context: BoltContext) -> bool:
+    if PDF_FILE_ACCESS_ENABLED is False:
+        return False
+    if context.authorize_result is None or context.authorize_result.bot_scopes is None:
+        return False
+    return "files:read" in context.authorize_result.bot_scopes
+
+
+def download_slack_pdf_content(pdf_url: str, bot_token: str) -> bytes:
+    headers = {"Authorization": f"Bearer {bot_token}"}
+    response = requests.get(pdf_url, headers=headers)
+    if response.status_code != 200:
+        error = f"Request to {pdf_url} failed with status code {response.status_code}"
+        raise SlackApiError(error, response)
+
+    content_type = response.headers.get("Content-Type", "")
+    if content_type.startswith("text/html"):
+        error = f"You don't have the permission to download this file: {pdf_url}"
+        raise SlackApiError(error, response)
+
+    if content_type not in ["application/pdf", "binary/octet-stream"]:
+        error = f"The responded content-type is not for PDF data: {content_type}"
         raise SlackApiError(error, response)
 
     return response.content

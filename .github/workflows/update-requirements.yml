@@ -51,6 +51,7 @@ jobs:
         run: |
           gh pr create \
             --title "Update requirements.txt to latest versions" \
+            --body "" \
             --head "${{ env.BRANCH_NAME }}" \
             --base main \
             --label dependencies \

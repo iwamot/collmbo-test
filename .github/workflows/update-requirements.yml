@@ -36,12 +36,14 @@ jobs:
 
       - name: Commit and Push Changes
         run: |
+          BRANCH_NAME="chore/update-requirements-$(date +'%Y%m%d%H%M%S')"
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b chore/update-requirements
+          git checkout -b "$BRANCH_NAME"
           git add requirements.txt
           git commit -m "Update requirements.txt to latest versions"
-          git push origin chore/update-requirements
+          git push origin "$BRANCH_NAME"
 
       - name: Create Pull Request
         env:
@@ -49,7 +51,7 @@ jobs:
         run: |
           gh pr create \
             --title "Update requirements.txt to latest versions" \
-            --head chore/update-requirements \
+            --head "${{ env.BRANCH_NAME }}" \
             --base main \
             --label dependencies \
             --label github_actions
